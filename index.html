@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Meesho Label Processor</title>
+    <script src="https://unpkg.com/pdf-lib@1.16.0/dist/pdf-lib.min.js"></script>
+    <script src="https://unpkg.com/downloadjs@1.4.7"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            background: white;
+        }
+        h2 {
+            color: #f43397;
+            text-align: center;
+            margin-top: 0;
+        }
+        .btn {
+            background-color: #f43397;
+            color: white;
+            border: none;
+            padding: 12px;
+            width: 100%;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: background-color 0.3s;
+        }
+        .btn:hover {
+            background-color: #d42b81;
+        }
+        .btn-secondary {
+            background-color: #6c757d;
+            margin-top: 5px;
+        }
+        .btn-secondary:hover {
+            background-color: #5a6268;
+        }
+        .progress-container {
+            margin-top: 15px;
+            display: none;
+        }
+        .message {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .error {
+            background-color: #ffebee;
+            color: #c62828;
+            border: 1px solid #ef9a9a;
+        }
+        .success {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+            border: 1px solid #a5d6a7;
+        }
+        .setting {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        #download-buttons {
+            margin-top: 15px;
+        }
+        .instructions {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            border-left: 4px solid #2196f3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Meesho Label Processor</h2>
+        
+        <div class="instructions">
+            <h3 style="margin-top: 0;">How to use:</h3>
+            <ol>
+                <li>Upload your Meesho shipping labels PDF</li>
+                <li>Adjust the bottom crop margin if needed</li>
+                <li>Click "Process Labels"</li>
+                <li>Download separated PDFs by courier</li>
+            </ol>
+        </div>
+        
+        <div class="setting">
+            <label for="pdf-upload">Meesho Labels PDF:</label>
+            <input type="file" id="pdf-upload" accept=".pdf" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;" />
+        </div>
+        
+        <div class="setting">
+            <label for="bottom-margin">Bottom Crop Margin (points):</label>
+            <input type="number" id="bottom-margin" value="470" min="0" step="10">
+            <small>Adjust this if labels aren't cropping correctly (default: 470)</small>
+        </div>
+        
+        <button id="process-btn" class="btn">Process Labels</button>
+        
+        <div id="progress-container" class="progress-container">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span id="progress-message">Processing...</span>
+                <span id="progress-text">0%</span>
+            </div>
+            <progress id="progress-bar" value="0" max="100" style="width: 100%; height: 10px;"></progress>
+        </div>
+        
+        <div id="result-container" style="margin-top: 15px; display: none;">
+            <h3 style="margin-bottom: 10px;">Processed Files:</h3>
+            <div id="download-buttons"></div>
+            <button id="download-all-btn" class="btn btn-secondary" style="display: none;">Download All as ZIP</button>
+        </div>
+        
+        <div id="message" class="message"></div>
+    </div>
+
+    <script>
+        // Initialize PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.worker.min.js';
+
+        document.getElementById('process-btn').addEventListener('click', async () => {
+            const pdfFile = document.getElementById('pdf-upload').files[0];
+            const messageEl = document.getElementById('message');
+            const progressContainer = document.getElementById('progress-container');
+            const progressBar = document.getElementById('progress-bar');
+            const progressText = document.getElementById('progress-text');
+            const progressMessage = document.getElementById('progress-message');
+            const resultContainer = document.getElementById('result-container');
+            const downloadButtons = document.getElementById('download-buttons');
+            const downloadAllBtn = document.getElementById('download-all-btn');
+            
+            // Clear previous state
+            messageEl.textContent = '';
+            messageEl.className = 'message';
+            resultContainer.style.display = 'none';
+            downloadButtons.innerHTML = '';
+            downloadAllBtn.style.display = 'none';
+            
+            if (!pdfFile) {
+                showMessage('Please select a PDF file first', 'error');
+                return;
+            }
+            
+            const BOTTOM_MARGIN = parseInt(document.getElementById('bottom-margin').value) || 470;
+            
+            try {
+                progressContainer.style.display = 'block';
+                updateProgress(5, 'Loading PDF file...');
+                
+                const arrayBuffer = await pdfFile.arrayBuffer();
+                
+                // Step 1: Analyze with PDF.js to detect couriers
+                updateProgress(10, 'Scanning for couriers...');
+                const pdfJsDoc = await pdfjsLib.getDocument(arrayBuffer).promise;
+                
+                // Common Meesho couriers with detection patterns
+                const couriers = {
+                    'DELHIVERY': { name: 'Delhivery', pattern: /DELHIVERY/i },
+                    'XPRESSBEES': { name: 'XpressBees', pattern: /XPRESSBEES/i },
+                    'ECOM_EXPRESS': { name: 'Ecom Express', pattern: /ECOM EXPRESS/i },
+                    'SHADOWFAX': { name: 'ShadowFax', pattern: /SHADOWFAX/i },
+                    'DUNZO': { name: 'Dunzo', pattern: /DUNZO/i },
+                    'BLUEDART': { name: 'BlueDart', pattern: /BLUEDART/i },
+                    'FEDEX': { name: 'FedEx', pattern: /FEDEX/i },
+                    'DHL': { name: 'DHL', pattern: /DHL/i },
+                    'DTDC': { name: 'DTDC', pattern: /DTDC/i },
+                    'GATI': { name: 'Gati', pattern: /GATI/i },
+                    'PROFESSIONAL': { name: 'Professional', pattern: /PROFESSIONAL/i },
+                    'TRACKON': { name: 'Trackon', pattern: /TRACKON/i },
+                    'PACKET': { name: 'Packet', pattern: /PACKET/i }
+                };
+                
+                const courierPages = {};
+                const totalPages = pdfJsDoc.numPages;
+                
+                // Scan each page to detect courier
+                for (let i = 0; i < totalPages; i++) {
+                    try {
+                        updateProgress(10 + Math.floor((i / totalPages) * 40), `Processing page ${i + 1} of ${totalPages}`);
+                        
+                        const page = await pdfJsDoc.getPage(i + 1);
+                        const textContent = await page.getTextContent();
+                        const pageText = textContent.items.map(item => item.str).join(' ');
+                        
+                        let foundCourier = 'OTHER';
+                        
+                        // Check for each courier pattern
+                        for (const [key, courier] of Object.entries(couriers)) {
+                            if (courier.pattern.test(pageText)) {
+                                foundCourier = courier.name;
+                                break;
+                            }
+                        }
+                        
+                        if (!courierPages[foundCourier]) {
+                            courierPages[foundCourier] = [];
+                        }
+                        courierPages[foundCourier].push(i);
+                        
+                    } catch (err) {
+                        console.error(`Error processing page ${i + 1}:`, err);
+                        // If page fails, add to OTHER category
+                        if (!courierPages['OTHER']) {
+                            courierPages['OTHER'] = [];
+                        }
+                        courierPages['OTHER'].push(i);
+                    }
+                }
+                
+                // Step 2: Process with PDF-lib to crop and organize
+                updateProgress(50, 'Organizing labels...');
+                const pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+                const processedFiles = [];
+                const courierNames = Object.keys(courierPages);
+                
+                // Process each courier group
+                for (let i = 0; i < courierNames.length; i++) {
+                    const courier = courierNames[i];
+                    const pageIndices = courierPages[courier];
+                    const safeCourierName = courier.replace(/[^a-zA-Z0-9]/g, '_');
+                    
+                    updateProgress(50 + Math.floor((i / courierNames.length) * 45), 
+                                 `Creating ${courier} labels (${pageIndices.length} labels)`);
+                    
+                    const newPdf = await PDFLib.PDFDocument.create();
+                    
+                    // Copy and crop each page
+                    for (let j = 0; j < pageIndices.length; j++) {
+                        const pageIndex = pageIndices[j];
+                        try {
+                            const [copiedPage] = await newPdf.copyPages(pdfDoc, [pageIndex]);
+                            
+                            // Crop the page
+                            const { width, height } = copiedPage.getSize();
+                            const newHeight = height - BOTTOM_MARGIN;
+                            
+                            if (newHeight > 0) {
+                                copiedPage.setCropBox(0, BOTTOM_MARGIN, width, newHeight);
+                            }
+                            
+                            newPdf.addPage(copiedPage);
+                        } catch (err) {
+                            console.error(`Error copying page ${pageIndex + 1} for ${courier}:`, err);
+                        }
+                    }
+                    
+                    // Save this courier's PDF
+                    const pdfBytes = await newPf.save();
+                    processedFiles.push({
+                        name: `Meesho_${safeCourierName}_Labels.pdf`,
+                        data: pdfBytes
+                    });
+                }
+                
+                // Create download buttons
+                updateProgress(95, 'Preparing downloads...');
+                processedFiles.forEach(file => {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn btn-secondary';
+                    btn.style.marginTop = '5px';
+                    btn.textContent = `Download ${file.name}`;
+                    btn.onclick = () => {
+                        download(file.data, file.name, "application/pdf");
+                    };
+                    downloadButtons.appendChild(btn);
+                });
+                
+                // Show results
+                resultContainer.style.display = 'block';
+                if (processedFiles.length > 1) {
+                    downloadAllBtn.style.display = 'block';
+                    downloadAllBtn.onclick = () => {
+                        processedFiles.forEach(file => {
+                            download(file.data, file.name, "application/pdf");
+                        });
+                    };
+                }
+                
+                updateProgress(100, 'Processing complete!');
+                showMessage(`Successfully processed ${totalPages} labels into ${courierNames.length} files`, 'success');
+                
+            } catch (error) {
+                console.error('Processing error:', error);
+                showMessage('Error: ' + error.message, 'error');
+                progressContainer.style.display = 'none';
+            }
+        });
+        
+        function updateProgress(percent, message) {
+            progressBar.value = percent;
+            progressText.textContent = `${percent}%`;
+            progressMessage.textContent = message;
+        }
+        
+        function showMessage(message, type) {
+            const el = document.getElementById('message');
+            el.textContent = message;
+            el.className = `message ${type}`;
+        }
+    </script>
+</body>
+</html>
